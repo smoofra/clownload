@@ -6,9 +6,9 @@ import argparse
 from pathlib import Path
 
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-import dropbox
-from dropbox.files import FileMetadata, ListFolderResult
-from dropbox.exceptions import ApiError, AuthError, HttpError
+import dropbox # type: ignore
+from dropbox.files import FileMetadata, ListFolderResult # type: ignore
+from dropbox.exceptions import ApiError, AuthError, HttpError # type: ignore
 
 def load_hashes(path: Path | None) -> set[str]:
     if path is None:
@@ -73,18 +73,18 @@ def list_all_files(dbx: dropbox.Dropbox, root_folder: str) -> list[FileMetadata]
         return res.has_more, res.cursor
 
     try:
-        res = dbx.files_list_folder(
+        res:ListFolderResult= dbx.files_list_folder(
             root_folder,
             recursive=True,
             include_non_downloadable_files=False
-        )
+        )  # type: ignore
     except ApiError as e:
         print(f"Error listing folder '{root_folder}': {e}", file=sys.stderr)
         raise
 
     has_more, cursor = handle_result(res)
     while has_more:
-        res = dbx.files_list_folder_continue(cursor)
+        res:ListFolderResult = dbx.files_list_folder_continue(cursor) # type: ignore
         has_more, cursor = handle_result(res)
 
     return files
