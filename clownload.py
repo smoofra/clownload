@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
+
 import os
 import sys
 import hashlib
 import argparse
 from pathlib import Path
+import signal
+from multiprocessing.pool import Pool, AsyncResult
+from typing import NamedTuple, Dict, Tuple, Iterator, Generator
+import csv
+from datetime import datetime
+from contextlib import contextmanager
 
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import dropbox # type: ignore
@@ -91,30 +98,145 @@ def list_all_files(dbx: dropbox.Dropbox, root_folder: str) -> list[FileMetadata]
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Download all Dropbox files, skipping those with known content hashes."
+        description="download files from clown computing providers."
     )
-    parser.add_argument(
+    subs = parser.add_subparsers(dest="command")
+    calcsums_parser = subs.add_parser("calcsums", help="Calculate checksums sums of local files.")
+    CalcsumsMain.setup_args(calcsums_parser)
+
+    dropbox_parser = subs.add_parser("dropbox", help="Download files from Dropbox.")
+    dropbox_parser.add_argument(
         "--root",
         default="",
         help="Dropbox folder path to start from (e.g. '' for root, or '/Photos')."
     )
-    parser.add_argument(
+    dropbox_parser.add_argument(
         "--hashes",
         type=Path,
         help="Path to a text file containing known Dropbox content_hash values (one per line)."
     )
-    parser.add_argument(
+    dropbox_parser.add_argument(
         "--dest",
         default="downloaded",
         type=Path,
         help="Local destination directory (default: ./downloaded)."
     )
-    parser.add_argument(
+    dropbox_parser.add_argument(
         "--skip-existing",
         action="store_true",
         help="If set, skip downloading when a local file already exists (no hash check)."
     )
+
     args = parser.parse_args()
+
+    if args.command == "calcsums":
+        CalcsumsMain().main(args)
+    elif args.command == "dropbox":
+        dropbox_main(args)
+
+
+class KnownFile(NamedTuple):
+    path: str
+    dropbox_hash: str
+    mtime: datetime # local mtime
+
+
+class CalcsumsMain:
+
+    absolute: bool
+    mount_ok: bool
+    known: Dict[str, KnownFile]
+    pool: Pool
+    sumsfile: str
+
+    @staticmethod
+    def _visit(path: str, mtime:datetime) -> KnownFile:
+        hash = dropbox_content_hash(path)
+        if mtime != datetime.fromtimestamp(os.stat(path).st_mtime):
+            raise Exception(f"file changed during hash calculation: {path}")
+        return KnownFile(path, hash, mtime)
+
+    def visit(self, path: str) -> AsyncResult[KnownFile] | None:
+        if os.path.samefile(path, self.sumsfile):
+            return None
+        if self.absolute:
+            path = os.path.abspath(path)
+        if os.path.islink(path) or not os.path.isfile(path):
+            return None
+        mtime = datetime.fromtimestamp(os.stat(path).st_mtime)
+        if known := self.known.get(path):
+            if mtime <= known.mtime:
+                return None
+        return self.pool.apply_async(self._visit, (path, mtime))
+
+    @contextmanager
+    def open_sums_file(self, path: str) -> Generator[None]:
+        fieldnames = ["path", "dropbox_hash", "mtime"]
+        if not os.path.exists(path):
+            with open(path, 'w') as f:
+                self.writer = csv.writer(f)
+                self.writer.writerow(fieldnames)
+                self.known = dict()
+                yield
+        else:
+            with open(path, 'r+') as f:
+                reader = csv.reader(f)
+                rows: Iterator[Tuple[str,str,str]] = iter(reader) # type: ignore
+                assert next(rows) == fieldnames
+                self.known = {
+                    path: KnownFile(
+                        path,
+                        dropbox_hash,
+                        datetime.fromisoformat(mtime))
+                    for path,dropbox_hash,mtime in rows}
+                self.writer = csv.writer(f)
+                yield
+
+    def walk(self) -> Iterator[AsyncResult[KnownFile]|None]:
+        for root, dirs, files in os.walk('.'):
+            dirs[:] = [dir for dir in dirs
+                    if not os.path.islink(os.path.join(root, dir))]
+            if not self.mount_ok:
+                dirs[:] = [dir for dir in dirs
+                        if not os.path.ismount(os.path.join(root, dir))]
+            for name in files:
+                path = os.path.normpath(os.path.join(root, name))
+                yield self.visit(path)
+
+    @staticmethod
+    def setup_args(parser: argparse.ArgumentParser):
+        parser.add_argument("--mount-ok", action="store_true")
+        parser.add_argument("--absolute", "--abs", action="store_true")
+        parser.add_argument("--sums", default="sums")
+        parser.add_argument("-C", "--chdir")
+
+    def main(self, args) -> None:
+        self.absolute = args.absolute
+        self.mount_ok = args.mount_ok
+        self.sumsfile = args.sums
+        if args.chdir:
+            os.chdir(args.chdir)
+
+        original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, original_sigint_handler)
+
+        with self.open_sums_file(self.sumsfile):
+            with Pool() as self.pool:
+                try:
+                    for result in list(self.walk()):
+                        if result:
+                            self.writer.writerow(result.get())
+                    self.pool.close()
+                    self.pool.join()
+                except KeyboardInterrupt:
+                    signal.signal(signal.SIGINT, signal.SIG_IGN)
+                    self.pool.terminate()
+                    print()
+                    print("interrupted.")
+                    sys.exit(1)
+
+
+def dropbox_main(args):
 
     token = os.environ.get("DROPBOX_TOKEN")
     if not token:
