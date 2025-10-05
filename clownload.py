@@ -140,46 +140,40 @@ class KnownFile(NamedTuple):
     dropbox_hash: str
     mtime: datetime # local mtime
 
+class SumsFile:
 
-class CalcsumsMain:
+    def __init__(self, path: str, mode: str):
+        self.path = path
+        self.mode = mode
+        assert self.mode in ('r', 'r+', 'w')
+        if self.mode == 'r+' and not os.path.exists(self.path):
+            self.mode = 'w'
 
-    absolute: bool
-    mount_ok: bool
-    known: Dict[str, KnownFile]
-    pool: Pool
-    sumsfile: str
+    def put(self, row: KnownFile) -> None:
+        self.known[row.path] = row
+        self.writer.writerow(row)
 
-    @staticmethod
-    def _visit(path: str, mtime:datetime) -> KnownFile:
-        hash = dropbox_content_hash(path)
-        if mtime != datetime.fromtimestamp(os.stat(path).st_mtime):
-            raise Exception(f"file changed during hash calculation: {path}")
-        return KnownFile(path, hash, mtime)
+    def get(self, path: str) -> KnownFile | None:
+        return self.known.get(path)
 
-    def visit(self, path: str) -> AsyncResult[KnownFile] | None:
-        if os.path.samefile(path, self.sumsfile):
-            return None
-        if self.absolute:
-            path = os.path.abspath(path)
-        if os.path.islink(path) or not os.path.isfile(path):
-            return None
-        mtime = datetime.fromtimestamp(os.stat(path).st_mtime)
-        if known := self.known.get(path):
-            if mtime <= known.mtime:
-                return None
-        return self.pool.apply_async(self._visit, (path, mtime))
+    def __enter__(self) -> "SumsFile":
+        self.context = self.open()
+        return self.context.__enter__()
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.context.__exit__(exc_type, exc_value, traceback)
 
     @contextmanager
-    def open_sums_file(self, path: str) -> Generator[None]:
+    def open(self) -> Generator["SumsFile"]:
         fieldnames = ["path", "dropbox_hash", "mtime"]
-        if not os.path.exists(path):
-            with open(path, 'w') as f:
+        if self.mode == 'w':
+            with open(self.path, 'w') as f:
                 self.writer = csv.writer(f)
                 self.writer.writerow(fieldnames)
                 self.known = dict()
-                yield
+                yield self
         else:
-            with open(path, 'r+') as f:
+            with open(self.path, self.mode) as f:
                 reader = csv.reader(f)
                 rows: Iterator[Tuple[str,str,str]] = iter(reader) # type: ignore
                 assert next(rows) == fieldnames
@@ -189,8 +183,38 @@ class CalcsumsMain:
                         dropbox_hash,
                         datetime.fromisoformat(mtime))
                     for path,dropbox_hash,mtime in rows}
-                self.writer = csv.writer(f)
-                yield
+                if self.mode == 'r+':
+                    self.writer = csv.writer(f)
+                yield self
+
+
+class CalcsumsMain:
+
+    absolute: bool
+    mount_ok: bool
+    known: Dict[str, KnownFile]
+    pool: Pool
+    sumsfile: SumsFile
+
+    @staticmethod
+    def _visit(path: str, mtime:datetime) -> KnownFile:
+        hash = dropbox_content_hash(path)
+        if mtime != datetime.fromtimestamp(os.stat(path).st_mtime):
+            raise Exception(f"file changed during hash calculation: {path}")
+        return KnownFile(path, hash, mtime)
+
+    def visit(self, path: str) -> AsyncResult[KnownFile] | None:
+        if os.path.samefile(path, self.sumsfile.path):
+            return None
+        if self.absolute:
+            path = os.path.abspath(path)
+        if os.path.islink(path) or not os.path.isfile(path):
+            return None
+        mtime = datetime.fromtimestamp(os.stat(path).st_mtime)
+        if known := self.sumsfile.get(path):
+            if mtime <= known.mtime:
+                return None
+        return self.pool.apply_async(self._visit, (path, mtime))
 
     def walk(self) -> Iterator[AsyncResult[KnownFile]|None]:
         for root, dirs, files in os.walk('.'):
@@ -213,19 +237,18 @@ class CalcsumsMain:
     def main(self, args) -> None:
         self.absolute = args.absolute
         self.mount_ok = args.mount_ok
-        self.sumsfile = args.sums
         if args.chdir:
             os.chdir(args.chdir)
 
         original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
         signal.signal(signal.SIGINT, original_sigint_handler)
 
-        with self.open_sums_file(self.sumsfile):
+        with SumsFile(args.sums, "r+") as self.sumsfile:
             with Pool() as self.pool:
                 try:
                     for result in list(self.walk()):
                         if result:
-                            self.writer.writerow(result.get())
+                            self.sumsfile.put(result.get())
                     self.pool.close()
                     self.pool.join()
                 except KeyboardInterrupt:
