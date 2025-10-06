@@ -1,0 +1,25 @@
+[project]
+name = "clownload"
+version = "0.0.1"
+description = "download files from clown computers"
+authors = [
+    { name = "Lawrence D'Anna" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "dropbox",
+    "tenacity"
+]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[project.scripts]
+clownload = "clownload:main"
+
+[dependency-groups]
+dev = [
+    "black (>=25.9.0,<26.0.0)"
+]
