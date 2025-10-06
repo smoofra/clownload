@@ -30,7 +30,7 @@ clownload calcsums .
 ```
 
 ## License
-[license][Apache Software License 2.0]
+[Apache Software License 2.0][license]
 
 
 [apps]: https://www.dropbox.com/developers/apps
