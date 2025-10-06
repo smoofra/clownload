@@ -1,6 +1,6 @@
 [project]
 name = "clownload"
-version = "0.0.1"
+version = "0.0.2"
 description = "download files from clown computers"
 authors = [
     { name = "Lawrence D'Anna", email = "larry@elder-gods.org"}
@@ -15,6 +15,9 @@ dependencies = [
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+homepage = "https://github.com/smoofra/clownload"
 
 [project.scripts]
 clownload = "clownload:main"

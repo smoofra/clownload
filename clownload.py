@@ -261,7 +261,18 @@ class DropboxMain:
         local_path = self.dest / fm.path_lower.lstrip("/")
         local_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if row := self.sumsfile.get(str(local_path)):
+        row = self.sumsfile.get(str(local_path))
+
+        if os.path.exists(local_path):
+            mtime = datetime.fromtimestamp(os.stat(local_path).st_mtime)
+            if not row or mtime > row.mtime:
+                # hash from csv is out of date, update it
+                row = File(str(local_path), dropbox_content_hash(local_path), mtime)
+                if mtime != datetime.fromtimestamp(os.stat(local_path).st_mtime):
+                    raise Exception(f"file changed during hash calculation: {local_path}")
+                self.sumsfile.put(row)
+
+        if row:
             if row.dropbox_hash == fm.content_hash:
                 log.info(
                     f"Skipping already downloaded file: {q(fm.path_lower)} at {q(local_path)}"

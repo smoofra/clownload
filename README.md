@@ -23,11 +23,19 @@ directory `DEST`.
 It will also create a csv file called `DEST/checksums.csv` with the dropbox
 content hashes of all the downloaded files.
 
+Local files that have already been downloaded will be skipped.
+
+Any existing files under `DEST` whose name conflicts will be moved aside to
+names like `file.old.1` and `file.old.2`.
+
+Additional csv files with known hashes to skip can be specified with `--known`.
 
 ### Calculate Checksums
 ```sh
 clownload calcsums .
 ```
+
+Calculate content hashes of local files and save them to `checksums.csv`.
 
 ## License
 [Apache Software License 2.0][license]
