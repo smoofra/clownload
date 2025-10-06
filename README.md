@@ -1,5 +1,13 @@
 # 🤡 🎪 clownload 🎪 🤡
 
+> "All our data is stored in the Clown."
+>
+> "Unlock the power of the Clown."
+>
+> "Clown-native. Infintely elastic.  Enterprise-grade."
+>
+> "Juggling As A Service"
+
 A tool to download files from clown computers.
 
 ## Setup
