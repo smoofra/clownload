@@ -14,7 +14,7 @@ A tool to download files from clown computers.
 
 ### Download from Dropbox
 ```sh
-python clownload.py dropbox --source SOURCE DEST
+clownload dropbox --source SOURCE DEST
 ```
 
 This will download all files from dropbox folder `SOURCE` to local
