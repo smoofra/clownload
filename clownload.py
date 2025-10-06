@@ -135,7 +135,7 @@ def main():
         dropbox_main(args)
 
 
-class KnownFile(NamedTuple):
+class File(NamedTuple):
     path: str
     dropbox_hash: str
     mtime: datetime # local mtime
@@ -149,11 +149,11 @@ class SumsFile:
         if self.mode == 'r+' and not os.path.exists(self.path):
             self.mode = 'w'
 
-    def put(self, row: KnownFile) -> None:
+    def put(self, row: File) -> None:
         self.known[row.path] = row
         self.writer.writerow(row)
 
-    def get(self, path: str) -> KnownFile | None:
+    def get(self, path: str) -> File | None:
         return self.known.get(path)
 
     def __enter__(self) -> "SumsFile":
@@ -178,7 +178,7 @@ class SumsFile:
                 rows: Iterator[Tuple[str,str,str]] = iter(reader) # type: ignore
                 assert next(rows) == fieldnames
                 self.known = {
-                    path: KnownFile(
+                    path: File(
                         path,
                         dropbox_hash,
                         datetime.fromisoformat(mtime))
@@ -192,18 +192,18 @@ class CalcsumsMain:
 
     absolute: bool
     mount_ok: bool
-    known: Dict[str, KnownFile]
+    known: Dict[str, File]
     pool: Pool
     sumsfile: SumsFile
 
     @staticmethod
-    def _visit(path: str, mtime:datetime) -> KnownFile:
+    def _visit(path: str, mtime:datetime) -> File:
         hash = dropbox_content_hash(path)
         if mtime != datetime.fromtimestamp(os.stat(path).st_mtime):
             raise Exception(f"file changed during hash calculation: {path}")
-        return KnownFile(path, hash, mtime)
+        return File(path, hash, mtime)
 
-    def visit(self, path: str) -> AsyncResult[KnownFile] | None:
+    def visit(self, path: str) -> AsyncResult[File] | None:
         if os.path.samefile(path, self.sumsfile.path):
             return None
         if self.absolute:
@@ -216,7 +216,7 @@ class CalcsumsMain:
                 return None
         return self.pool.apply_async(self._visit, (path, mtime))
 
-    def walk(self) -> Iterator[AsyncResult[KnownFile]|None]:
+    def walk(self) -> Iterator[AsyncResult[File]|None]:
         for root, dirs, files in os.walk('.'):
             dirs[:] = [dir for dir in dirs
                     if not os.path.islink(os.path.join(root, dir))]
