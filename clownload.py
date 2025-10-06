@@ -7,26 +7,28 @@ import argparse
 from pathlib import Path
 import signal
 from multiprocessing.pool import Pool, AsyncResult
-from typing import NamedTuple, Dict, Tuple, Iterator, Generator
+from typing import NamedTuple, Dict, Tuple, Iterator, Generator, Set, List
 import csv
 from datetime import datetime
+import logging
 from contextlib import contextmanager
+import shutil
+import shlex
+import itertools
 
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import dropbox # type: ignore
+from dropbox import Dropbox
 from dropbox.files import FileMetadata, ListFolderResult # type: ignore
 from dropbox.exceptions import ApiError, AuthError, HttpError # type: ignore
 
-def load_hashes(path: Path | None) -> set[str]:
-    if path is None:
-        return set()
-    with path.open("r") as f:
-        def i():
-            for line in f:
-                line = line.strip()
-                if line:
-                    yield line
-    return set(i())
+log = logging.getLogger("clownload")
+
+class UserError(Exception):
+    pass
+
+def q(s) -> str:
+    return shlex.quote(str(s))
 
 def dropbox_content_hash(path: str | Path) -> str:
     """
@@ -45,96 +47,6 @@ def dropbox_content_hash(path: str | Path) -> str:
     full_hash = hashlib.sha256(b"".join(block_hashes)).hexdigest()
     return full_hash
 
-def ensure_local_path(dest_root: Path, dropbox_path_lower: str) -> Path:
-    """
-    Map a Dropbox path (lowercase) to a local filesystem path rooted at dest_root.
-    """
-    rel = dropbox_path_lower.lstrip("/")
-    local_path = dest_root / rel
-    local_path.parent.mkdir(parents=True, exist_ok=True)
-    return local_path
-
-@retry(
-    reraise=True,
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=1, max=30),
-    retry=retry_if_exception_type((ApiError, HttpError, ConnectionError))
-)
-def download_file(dbx: dropbox.Dropbox, dropbox_path: str, local_path: Path) -> None:
-    """
-    Download a single file with basic retry/backoff.
-    """
-    # Use files_download_to_file to stream efficiently to disk
-    dbx.files_download_to_file(str(local_path), dropbox_path)
-
-def list_all_files(dbx: dropbox.Dropbox, root_folder: str) -> list[FileMetadata]:
-    """
-    Recursively list all files from root_folder (Dropbox path), returning a list of FileMetadata.
-    """
-    files: list[FileMetadata] = []
-
-    def handle_result(res: ListFolderResult):
-        for entry in res.entries:
-            if isinstance(entry, FileMetadata):
-                files.append(entry)
-        return res.has_more, res.cursor
-
-    try:
-        res:ListFolderResult= dbx.files_list_folder(
-            root_folder,
-            recursive=True,
-            include_non_downloadable_files=False
-        )  # type: ignore
-    except ApiError as e:
-        print(f"Error listing folder '{root_folder}': {e}", file=sys.stderr)
-        raise
-
-    has_more, cursor = handle_result(res)
-    while has_more:
-        res:ListFolderResult = dbx.files_list_folder_continue(cursor) # type: ignore
-        has_more, cursor = handle_result(res)
-
-    return files
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="download files from clown computing providers."
-    )
-    subs = parser.add_subparsers(dest="command")
-    calcsums_parser = subs.add_parser("calcsums", help="Calculate checksums sums of local files.")
-    CalcsumsMain.setup_args(calcsums_parser)
-
-    dropbox_parser = subs.add_parser("dropbox", help="Download files from Dropbox.")
-    dropbox_parser.add_argument(
-        "--root",
-        default="",
-        help="Dropbox folder path to start from (e.g. '' for root, or '/Photos')."
-    )
-    dropbox_parser.add_argument(
-        "--hashes",
-        type=Path,
-        help="Path to a text file containing known Dropbox content_hash values (one per line)."
-    )
-    dropbox_parser.add_argument(
-        "--dest",
-        default="downloaded",
-        type=Path,
-        help="Local destination directory (default: ./downloaded)."
-    )
-    dropbox_parser.add_argument(
-        "--skip-existing",
-        action="store_true",
-        help="If set, skip downloading when a local file already exists (no hash check)."
-    )
-
-    args = parser.parse_args()
-
-    if args.command == "calcsums":
-        CalcsumsMain().main(args)
-    elif args.command == "dropbox":
-        dropbox_main(args)
-
-
 class File(NamedTuple):
     path: str
     dropbox_hash: str
@@ -142,7 +54,7 @@ class File(NamedTuple):
 
 class SumsFile:
 
-    def __init__(self, path: str, mode: str):
+    def __init__(self, path: Path|str, mode: str):
         self.path = path
         self.mode = mode
         assert self.mode in ('r', 'r+', 'w')
@@ -162,6 +74,9 @@ class SumsFile:
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.context.__exit__(exc_type, exc_value, traceback)
+
+    def __contains__(self, path: str) -> bool:
+        return path in self.known
 
     @contextmanager
     def open(self) -> Generator["SumsFile"]:
@@ -190,8 +105,6 @@ class SumsFile:
 
 class CalcsumsMain:
 
-    absolute: bool
-    mount_ok: bool
     known: Dict[str, File]
     pool: Pool
     sumsfile: SumsFile
@@ -206,8 +119,6 @@ class CalcsumsMain:
     def visit(self, path: str) -> AsyncResult[File] | None:
         if os.path.samefile(path, self.sumsfile.path):
             return None
-        if self.absolute:
-            path = os.path.abspath(path)
         if os.path.islink(path) or not os.path.isfile(path):
             return None
         mtime = datetime.fromtimestamp(os.stat(path).st_mtime)
@@ -220,25 +131,18 @@ class CalcsumsMain:
         for root, dirs, files in os.walk('.'):
             dirs[:] = [dir for dir in dirs
                     if not os.path.islink(os.path.join(root, dir))]
-            if not self.mount_ok:
-                dirs[:] = [dir for dir in dirs
-                        if not os.path.ismount(os.path.join(root, dir))]
             for name in files:
                 path = os.path.normpath(os.path.join(root, name))
                 yield self.visit(path)
 
     @staticmethod
     def setup_args(parser: argparse.ArgumentParser):
-        parser.add_argument("--mount-ok", action="store_true")
-        parser.add_argument("--absolute", "--abs", action="store_true")
-        parser.add_argument("--sums", default="sums")
-        parser.add_argument("-C", "--chdir")
+        parser.add_argument("--sums", default="checksums.csv", help="filename for checksums")
+        parser.add_argument("directory")
 
     def main(self, args) -> None:
-        self.absolute = args.absolute
-        self.mount_ok = args.mount_ok
-        if args.chdir:
-            os.chdir(args.chdir)
+        if args.directory:
+            os.chdir(args.directory)
 
         original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
         signal.signal(signal.SIGINT, original_sigint_handler)
@@ -259,67 +163,135 @@ class CalcsumsMain:
                     sys.exit(1)
 
 
-def dropbox_main(args):
+class DropboxMain:
 
-    token = os.environ.get("DROPBOX_TOKEN")
-    if not token:
-        print("ERROR: Please set DROPBOX_TOKEN environment variable with your access token.", file=sys.stderr)
-        sys.exit(1)
+    source: str
+    dest: Path
+    known: Set[str]
+    sums: SumsFile
+    dropbox: Dropbox
+
+    @staticmethod
+    def setup_args(parser: argparse.ArgumentParser):
+        parser.add_argument("--sums", default="checksums.csv", help="filename for checksums", metavar="CHECKSUMS.CSV")
+        parser.add_argument(
+            "--source", default="", metavar="DROPBOX_PATH",
+            help="dropbox folder to download",
+        )
+        parser.add_argument(
+            "--known", "-k", type=Path, action="append", default=list(), metavar="KNOWN.CSV",
+            help="additional csv file containing hashes of known files to skip",
+        )
+        parser.add_argument(
+            "dest", default=".", type=Path, nargs="?", metavar="LOCAL_PATH",
+            help="local destination directory",
+        )
+
+    def main(self, args) -> None:
+        self.source = args.source
+        self.dest = args.dest
+        self.known = set()
+        for path in args.known:
+            with SumsFile(path, 'r') as f:
+                self.known.update(f.dropbox_hash for f in f.known.values())
+
+        token = os.environ.get("DROPBOX_TOKEN")
+        if not token:
+            raise UserError("ERROR: set $DROPBOX_TOKEN. see: https://www.dropbox.com/developers/apps")
+
+        args.dest.mkdir(parents=True, exist_ok=True)
+
+        with SumsFile(self.dest / args.sums, "r+") as self.sumsfile:
+            with dropbox.Dropbox(token, timeout=120) as self.dropbox:
+                self.dropbox.users_get_current_account()
+                files = list(self.list_files(self.source))
+                for fm in files:
+                    self.download_file(fm)
 
 
-    try:
-        known_hashes = load_hashes(args.hashes)
-    except FileNotFoundError:
-        print(f"ERROR: Hash file not found: {args.hashes}", file=sys.stderr)
-        sys.exit(1)
+    def list_files(self, dropbox_path: str) -> Iterator[FileMetadata]:
+        "Recursively list all files dropbox_path."
 
-    dbx = dropbox.Dropbox(token, timeout=120)
-    try:
-        dbx.users_get_current_account()
-    except AuthError:
-        print("ERROR: Invalid Dropbox token (authentication failed).", file=sys.stderr)
-        sys.exit(1)
+        def results() -> Iterator[ListFolderResult]:
+            result: ListFolderResult
+            result = self.dropbox.files_list_folder(dropbox_path, recursive=True,
+                include_non_downloadable_files=False
+            )  # type: ignore
+            yield result
+            while result.has_more:
+                result = self.dropbox.files_list_folder_continue(result.cursor) # type: ignore
+                yield result
 
-    print(f"Listing files under Dropbox path: '{args.root or '/'}' ...")
-    files = list_all_files(dbx, args.root)
-    print(f"Discovered {len(files)} files.")
+        for result in results():
+            for entry in result.entries:
+                if isinstance(entry, FileMetadata):
+                    log.info(f"Found file: {q(entry.path_lower)}")
+                    yield entry
 
-    args.dest.mkdir(parents=True, exist_ok=True)
 
-    skipped_known = 0
-    skipped_existing = 0
-    downloaded = 0
-    errors = 0
+    @retry(
+        reraise=True,
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=1, min=1, max=30),
+        retry=retry_if_exception_type((ApiError, HttpError, ConnectionError))
+    )
+    def download_file(self, fm:FileMetadata) -> None:
+        if fm.content_hash in self.known:
+            log.info("Skipping known file: %s", fm.path_lower)
+            return
+        
+        local_path = self.dest / fm.path_lower.lstrip("/")
+        local_path.parent.mkdir(parents=True, exist_ok=True)
 
-    for fm in files:
-        # fm.content_hash is Dropbox's server-side hash; available without downloading the file
-        ch = fm.content_hash
-        if ch in known_hashes:
-            skipped_known += 1
-            print(f"[SKIP hash] {fm.path_display} (content_hash in known list)")
-            continue
+        if row := self.sumsfile.get(str(local_path)):
+            if row.dropbox_hash == fm.content_hash:
+                log.info(f"Skipping already downloaded file: {q(fm.path_lower)} at {q(local_path)}")
+                return
 
-        local_path = ensure_local_path(args.dest, fm.path_lower)
+            # file changed, move old file out of the way
+            for n in itertools.count():
+                old_path = local_path.parent / f"{local_path.name}.old.{n}"
+                if not old_path.exists():
+                    log.info(f"Moving changed file {q(local_path)} to {q(old_path)}")
+                    shutil.move(local_path, old_path)
+                    self.sumsfile.put(File(str(old_path), row.dropbox_hash, row.mtime))
+                    break
 
-        if args.skip_existing and local_path.exists():
-            skipped_existing += 1
-            print(f"[SKIP exists] {fm.path_display} -> {local_path}")
-            continue
+        log.info(f"Downloading {q(fm.path_lower)} to {q(local_path)}")
+        self.dropbox.files_download_to_file(local_path, fm.path_lower)
+        row = File(str(local_path),
+                   fm.content_hash,
+                   datetime.fromtimestamp(os.stat(local_path).st_mtime))
+        self.sumsfile.put(row)
 
-        try:
-            download_file(dbx, fm.path_lower, local_path)
-            downloaded += 1
-            print(f"[DOWNLOADED] {fm.path_display} -> {local_path}")
-        except Exception as e:
-            errors += 1
-            print(f"[ERROR] {fm.path_display}: {e}", file=sys.stderr)
 
-    print("\nSummary")
-    print("-------")
-    print(f"Downloaded:      {downloaded}")
-    print(f"Skipped (hash):  {skipped_known}")
-    print(f"Skipped (exists):{skipped_existing}")
-    print(f"Errors:          {errors}")
+def main():
+    parser = argparse.ArgumentParser(description="Download files from clown computing providers")
+    parser.add_argument("--verbose", "-v", action="count", default=0)
+    subs = parser.add_subparsers(dest="command", required=True)
+    calcsums_parser = subs.add_parser("calcsums", help="Calculate checksums of local files")
+    dropbox_parser = subs.add_parser("dropbox", help="Download files from Dropbox")
+    CalcsumsMain.setup_args(calcsums_parser)
+    DropboxMain.setup_args(dropbox_parser)
+    args = parser.parse_args()
+    if args.verbose >= 2:
+        logging.basicConfig(level=logging.DEBUG)
+    elif args.verbose >= 1:
+        log.setLevel(logging.INFO)
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter('%(message)s'))
+        log.addHandler(handler)
+
+    if args.command == "calcsums":
+        CalcsumsMain().main(args)
+    elif args.command == "dropbox":
+        DropboxMain().main(args)
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except UserError as e:
+        print(e, file=sys.stderr)
+        sys.exit(1)
