@@ -286,7 +286,7 @@ class DropboxMain:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Download files from clown computing providers")
+    parser = argparse.ArgumentParser(description="🤡 Download files from clown computers. 🤡")
     parser.add_argument("--verbose", "-v", action="count", default=0)
     subs = parser.add_subparsers(dest="command", required=True)
     calcsums_parser = subs.add_parser("calcsums", help="Calculate checksums of local files")
