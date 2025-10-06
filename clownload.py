@@ -17,18 +17,21 @@ import shlex
 import itertools
 
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-import dropbox # type: ignore
+import dropbox  # type: ignore
 from dropbox import Dropbox
-from dropbox.files import FileMetadata, ListFolderResult # type: ignore
-from dropbox.exceptions import ApiError, AuthError, HttpError # type: ignore
+from dropbox.files import FileMetadata, ListFolderResult  # type: ignore
+from dropbox.exceptions import ApiError, AuthError, HttpError  # type: ignore
 
 log = logging.getLogger("clownload")
+
 
 class UserError(Exception):
     pass
 
+
 def q(s) -> str:
     return shlex.quote(str(s))
+
 
 def dropbox_content_hash(path: str | Path) -> str:
     """
@@ -47,19 +50,21 @@ def dropbox_content_hash(path: str | Path) -> str:
     full_hash = hashlib.sha256(b"".join(block_hashes)).hexdigest()
     return full_hash
 
+
 class File(NamedTuple):
     path: str
     dropbox_hash: str
-    mtime: datetime # local mtime
+    mtime: datetime  # local mtime
+
 
 class SumsFile:
 
-    def __init__(self, path: Path|str, mode: str):
+    def __init__(self, path: Path | str, mode: str):
         self.path = path
         self.mode = mode
-        assert self.mode in ('r', 'r+', 'w')
-        if self.mode == 'r+' and not os.path.exists(self.path):
-            self.mode = 'w'
+        assert self.mode in ("r", "r+", "w")
+        if self.mode == "r+" and not os.path.exists(self.path):
+            self.mode = "w"
 
     def put(self, row: File) -> None:
         self.known[row.path] = row
@@ -81,8 +86,8 @@ class SumsFile:
     @contextmanager
     def open(self) -> Generator["SumsFile"]:
         fieldnames = ["path", "dropbox_hash", "mtime"]
-        if self.mode == 'w':
-            with open(self.path, 'w') as f:
+        if self.mode == "w":
+            with open(self.path, "w") as f:
                 self.writer = csv.writer(f)
                 self.writer.writerow(fieldnames)
                 self.known = dict()
@@ -90,15 +95,13 @@ class SumsFile:
         else:
             with open(self.path, self.mode) as f:
                 reader = csv.reader(f)
-                rows: Iterator[Tuple[str,str,str]] = iter(reader) # type: ignore
+                rows: Iterator[Tuple[str, str, str]] = iter(reader)  # type: ignore
                 assert next(rows) == fieldnames
                 self.known = {
-                    path: File(
-                        path,
-                        dropbox_hash,
-                        datetime.fromisoformat(mtime))
-                    for path,dropbox_hash,mtime in rows}
-                if self.mode == 'r+':
+                    path: File(path, dropbox_hash, datetime.fromisoformat(mtime))
+                    for path, dropbox_hash, mtime in rows
+                }
+                if self.mode == "r+":
                     self.writer = csv.writer(f)
                 yield self
 
@@ -110,7 +113,7 @@ class CalcsumsMain:
     sumsfile: SumsFile
 
     @staticmethod
-    def _visit(path: str, mtime:datetime) -> File:
+    def _visit(path: str, mtime: datetime) -> File:
         hash = dropbox_content_hash(path)
         if mtime != datetime.fromtimestamp(os.stat(path).st_mtime):
             raise Exception(f"file changed during hash calculation: {path}")
@@ -127,10 +130,9 @@ class CalcsumsMain:
                 return None
         return self.pool.apply_async(self._visit, (path, mtime))
 
-    def walk(self) -> Iterator[AsyncResult[File]|None]:
-        for root, dirs, files in os.walk('.'):
-            dirs[:] = [dir for dir in dirs
-                    if not os.path.islink(os.path.join(root, dir))]
+    def walk(self) -> Iterator[AsyncResult[File] | None]:
+        for root, dirs, files in os.walk("."):
+            dirs[:] = [dir for dir in dirs if not os.path.islink(os.path.join(root, dir))]
             for name in files:
                 path = os.path.normpath(os.path.join(root, name))
                 yield self.visit(path)
@@ -173,17 +175,33 @@ class DropboxMain:
 
     @staticmethod
     def setup_args(parser: argparse.ArgumentParser):
-        parser.add_argument("--sums", default="checksums.csv", help="filename for checksums", metavar="CHECKSUMS.CSV")
         parser.add_argument(
-            "--source", default="", metavar="DROPBOX_PATH",
+            "--sums",
+            default="checksums.csv",
+            help="filename for checksums",
+            metavar="CHECKSUMS.CSV",
+        )
+        parser.add_argument(
+            "--source",
+            default="",
+            metavar="DROPBOX_PATH",
             help="dropbox folder to download",
         )
         parser.add_argument(
-            "--known", "-k", type=Path, action="append", default=list(), metavar="KNOWN.CSV",
+            "--known",
+            "-k",
+            type=Path,
+            action="append",
+            default=list(),
+            metavar="KNOWN.CSV",
             help="additional csv file containing hashes of known files to skip",
         )
         parser.add_argument(
-            "dest", default=".", type=Path, nargs="?", metavar="LOCAL_PATH",
+            "dest",
+            default=".",
+            type=Path,
+            nargs="?",
+            metavar="LOCAL_PATH",
             help="local destination directory",
         )
 
@@ -192,12 +210,14 @@ class DropboxMain:
         self.dest = args.dest
         self.known = set()
         for path in args.known:
-            with SumsFile(path, 'r') as f:
+            with SumsFile(path, "r") as f:
                 self.known.update(f.dropbox_hash for f in f.known.values())
 
         token = os.environ.get("DROPBOX_TOKEN")
         if not token:
-            raise UserError("ERROR: set $DROPBOX_TOKEN. see: https://www.dropbox.com/developers/apps")
+            raise UserError(
+                "ERROR: set $DROPBOX_TOKEN. see: https://www.dropbox.com/developers/apps"
+            )
 
         args.dest.mkdir(parents=True, exist_ok=True)
 
@@ -208,18 +228,17 @@ class DropboxMain:
                 for fm in files:
                     self.download_file(fm)
 
-
     def list_files(self, dropbox_path: str) -> Iterator[FileMetadata]:
         "Recursively list all files dropbox_path."
 
         def results() -> Iterator[ListFolderResult]:
             result: ListFolderResult
-            result = self.dropbox.files_list_folder(dropbox_path, recursive=True,
-                include_non_downloadable_files=False
+            result = self.dropbox.files_list_folder(
+                dropbox_path, recursive=True, include_non_downloadable_files=False
             )  # type: ignore
             yield result
             while result.has_more:
-                result = self.dropbox.files_list_folder_continue(result.cursor) # type: ignore
+                result = self.dropbox.files_list_folder_continue(result.cursor)  # type: ignore
                 yield result
 
         for result in results():
@@ -228,24 +247,25 @@ class DropboxMain:
                     log.info(f"Found file: {q(entry.path_lower)}")
                     yield entry
 
-
     @retry(
         reraise=True,
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, min=1, max=30),
-        retry=retry_if_exception_type((ApiError, HttpError, ConnectionError))
+        retry=retry_if_exception_type((ApiError, HttpError, ConnectionError)),
     )
-    def download_file(self, fm:FileMetadata) -> None:
+    def download_file(self, fm: FileMetadata) -> None:
         if fm.content_hash in self.known:
             log.info("Skipping known file: %s", fm.path_lower)
             return
-        
+
         local_path = self.dest / fm.path_lower.lstrip("/")
         local_path.parent.mkdir(parents=True, exist_ok=True)
 
         if row := self.sumsfile.get(str(local_path)):
             if row.dropbox_hash == fm.content_hash:
-                log.info(f"Skipping already downloaded file: {q(fm.path_lower)} at {q(local_path)}")
+                log.info(
+                    f"Skipping already downloaded file: {q(fm.path_lower)} at {q(local_path)}"
+                )
                 return
 
             # file changed, move old file out of the way
@@ -259,9 +279,9 @@ class DropboxMain:
 
         log.info(f"Downloading {q(fm.path_lower)} to {q(local_path)}")
         self.dropbox.files_download_to_file(local_path, fm.path_lower)
-        row = File(str(local_path),
-                   fm.content_hash,
-                   datetime.fromtimestamp(os.stat(local_path).st_mtime))
+        row = File(
+            str(local_path), fm.content_hash, datetime.fromtimestamp(os.stat(local_path).st_mtime)
+        )
         self.sumsfile.put(row)
 
 
@@ -280,7 +300,7 @@ def main():
         log.setLevel(logging.INFO)
         handler = logging.StreamHandler()
         handler.setLevel(logging.INFO)
-        handler.setFormatter(logging.Formatter('%(message)s'))
+        handler.setFormatter(logging.Formatter("%(message)s"))
         log.addHandler(handler)
 
     if args.command == "calcsums":

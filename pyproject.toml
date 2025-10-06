@@ -21,5 +21,6 @@ clownload = "clownload:main"
 
 [dependency-groups]
 dev = [
-    "black (>=25.9.0,<26.0.0)"
+    "black (>=25.9.0,<26.0.0)",
+    "mypy (>=1.18.2,<2.0.0)"
 ]
