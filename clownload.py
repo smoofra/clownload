@@ -289,7 +289,11 @@ class DropboxMain:
                 )
                 return
 
+        if local_path.exists():
             # file changed, move old file out of the way
+            if not row:
+                mtime = datetime.fromtimestamp(os.stat(local_path).st_mtime)
+                row = CalcsumsMain._visit(local_path, mtime)
             for n in itertools.count():
                 old_path = local_path.parent / f"{local_path.name}.old.{n}"
                 if not old_path.exists():
