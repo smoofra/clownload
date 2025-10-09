@@ -7,7 +7,7 @@ import argparse
 from pathlib import Path
 import signal
 from multiprocessing.pool import Pool, AsyncResult
-from typing import NamedTuple, Dict, Tuple, Iterator, Generator, Set, List
+from typing import NamedTuple, Dict, Tuple, Iterator, Generator, Set
 import csv
 from datetime import datetime
 import logging
@@ -20,7 +20,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 import dropbox  # type: ignore
 from dropbox import Dropbox
 from dropbox.files import FileMetadata, ListFolderResult  # type: ignore
-from dropbox.exceptions import ApiError, AuthError, HttpError  # type: ignore
+from dropbox.exceptions import ApiError, HttpError  # type: ignore
 
 log = logging.getLogger("clownload")
 
