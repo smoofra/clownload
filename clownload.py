@@ -87,13 +87,13 @@ class SumsFile:
     def open(self) -> Generator["SumsFile"]:
         fieldnames = ["path", "dropbox_hash", "mtime"]
         if self.mode == "w":
-            with open(self.path, "w") as f:
+            with open(self.path, "w", newline="") as f:
                 self.writer = csv.writer(f)
                 self.writer.writerow(fieldnames)
                 self.known = dict()
                 yield self
         else:
-            with open(self.path, self.mode) as f:
+            with open(self.path, self.mode, newline="") as f:
                 reader = csv.reader(f)
                 rows: Iterator[Tuple[str, str, str]] = iter(reader)  # type: ignore
                 assert next(rows) == fieldnames
