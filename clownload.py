@@ -119,24 +119,24 @@ class CalcsumsMain:
             raise Exception(f"file changed during hash calculation: {path}")
         return File(path, hash, mtime)
 
-    def visit(self, path: str) -> AsyncResult[File] | None:
+    def visit(self, path: str) -> Iterator[AsyncResult[File]]:
         if os.path.samefile(path, self.sumsfile.path):
-            return None
+            return
         if os.path.islink(path) or not os.path.isfile(path):
-            return None
+            return
         mtime = datetime.fromtimestamp(os.stat(path).st_mtime)
         if known := self.sumsfile.get(path):
             if mtime <= known.mtime:
-                return None
+                return
         log.info(f"Hashing {path}")
-        return self.pool.apply_async(self._visit, (path, mtime))
+        yield self.pool.apply_async(self._visit, (path, mtime))
 
-    def walk(self) -> Iterator[AsyncResult[File] | None]:
+    def walk(self) -> Iterator[AsyncResult[File]]:
         for root, dirs, files in os.walk("."):
             dirs[:] = [dir for dir in dirs if not os.path.islink(os.path.join(root, dir))]
             for name in files:
                 path = os.path.normpath(os.path.join(root, name))
-                yield self.visit(path)
+                yield from self.visit(path)
 
     @staticmethod
     def setup_args(parser: argparse.ArgumentParser):
@@ -149,8 +149,7 @@ class CalcsumsMain:
         with SumsFile(args.sums, "r+") as self.sumsfile:
             with init_pool() as self.pool:
                 for result in list(self.walk()):
-                    if result:
-                        self.sumsfile.put(result.get())
+                    self.sumsfile.put(result.get())
                 self.pool.close()
                 self.pool.join()
 
