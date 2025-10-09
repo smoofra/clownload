@@ -84,7 +84,7 @@ class SumsFile:
         return path in self.known
 
     @contextmanager
-    def open(self) -> Generator["SumsFile"]:
+    def open(self) -> Generator["SumsFile", None, None]:
         fieldnames = ["path", "dropbox_hash", "mtime"]
         if self.mode == "w":
             with open(self.path, "w", newline="") as f:
