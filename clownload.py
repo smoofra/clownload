@@ -128,6 +128,7 @@ class CalcsumsMain:
         if known := self.sumsfile.get(path):
             if mtime <= known.mtime:
                 return None
+        log.info(f"Hashing {path}")
         return self.pool.apply_async(self._visit, (path, mtime))
 
     def walk(self) -> Iterator[AsyncResult[File] | None]:
