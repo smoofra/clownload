@@ -110,6 +110,7 @@ class FileStat(NamedTuple):
     path: str
     mtime: datetime
 
+
 class CalcsumsMain:
 
     known: Dict[str, File]
@@ -155,14 +156,28 @@ class CalcsumsMain:
                     self.sumsfile.put(row)
 
 
+def init_worker():
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+interrupted = False
+
+
+def sigint(signum, stack):
+    global interrupted
+    interrupted = True
+
+
 @contextmanager
 def init_pool() -> Generator[Pool, None, None]:
     "Make a multprocessing pool where ^C works without spewing tracebacks everywhere."
     original = None
     try:
-        original = signal.signal(signal.SIGINT, signal.SIG_IGN)
-        with Pool() as pool:
+        original = signal.signal(signal.SIGINT, sigint)
+        with Pool(initializer=init_worker) as pool:
             signal.signal(signal.SIGINT, original)
+            if interrupted:
+                raise KeyboardInterrupt
             yield pool
     finally:
         if original:
