@@ -319,14 +319,21 @@ def _main():
     CalcsumsMain.setup_args(calcsums_parser)
     DropboxMain.setup_args(dropbox_parser)
     args = parser.parse_args()
-    if args.verbose >= 2:
+
+    if args.verbose >= 3:
         logging.basicConfig(level=logging.DEBUG)
+    elif args.verbose >= 2:
+        logging.basicConfig(level=logging.INFO)
     elif args.verbose >= 1:
+        logging.root.setLevel(logging.WARN)
+        logging.getLogger("dropbox").setLevel(logging.CRITICAL)
         log.setLevel(logging.INFO)
         handler = logging.StreamHandler()
         handler.setLevel(logging.INFO)
         handler.setFormatter(logging.Formatter("%(message)s"))
         log.addHandler(handler)
+    else:
+        logging.getLogger("dropbox").setLevel(logging.CRITICAL)
 
     if args.command == "calcsums":
         CalcsumsMain().main(args)
