@@ -1,6 +1,6 @@
 [project]
 name = "clownload"
-version = "0.0.3"
+version = "0.0.4"
 description = "download files from clown computers"
 authors = [
     { name = "Lawrence D'Anna", email = "larry@elder-gods.org"}
