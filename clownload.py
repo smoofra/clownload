@@ -106,20 +106,23 @@ class SumsFile:
                 yield self
 
 
+class FileStat(NamedTuple):
+    path: str
+    mtime: datetime
+
 class CalcsumsMain:
 
     known: Dict[str, File]
-    pool: Pool
     sumsfile: SumsFile
 
     @staticmethod
-    def _visit(path: str, mtime: datetime) -> File:
-        hash = dropbox_content_hash(path)
-        if mtime != datetime.fromtimestamp(os.stat(path).st_mtime):
-            raise Exception(f"file changed during hash calculation: {path}")
-        return File(path, hash, mtime)
+    def _visit(file: FileStat) -> File:
+        hash = dropbox_content_hash(file.path)
+        if file.mtime != datetime.fromtimestamp(os.stat(file.path).st_mtime):
+            raise Exception(f"file changed during hash calculation: {file.path}")
+        return File(file.path, hash, file.mtime)
 
-    def visit(self, path: str) -> Iterator[AsyncResult[File]]:
+    def visit(self, path: str) -> Iterator[FileStat]:
         if os.path.samefile(path, self.sumsfile.path):
             return
         if os.path.islink(path) or not os.path.isfile(path):
@@ -129,9 +132,9 @@ class CalcsumsMain:
             if mtime <= known.mtime:
                 return
         log.info(f"Hashing {path}")
-        yield self.pool.apply_async(self._visit, (path, mtime))
+        yield FileStat(path, mtime)
 
-    def walk(self) -> Iterator[AsyncResult[File]]:
+    def walk(self) -> Iterator[FileStat]:
         for root, dirs, files in os.walk("."):
             dirs[:] = [dir for dir in dirs if not os.path.islink(os.path.join(root, dir))]
             for name in files:
@@ -147,11 +150,9 @@ class CalcsumsMain:
         if args.directory:
             os.chdir(args.directory)
         with SumsFile(args.sums, "r+") as self.sumsfile:
-            with init_pool() as self.pool:
-                for result in list(self.walk()):
-                    self.sumsfile.put(result.get())
-                self.pool.close()
-                self.pool.join()
+            with init_pool() as pool:
+                for row in pool.imap_unordered(self._visit, self.walk()):
+                    self.sumsfile.put(row)
 
 
 @contextmanager
@@ -292,7 +293,7 @@ class DropboxMain:
             # file changed, move old file out of the way
             if not row:
                 mtime = datetime.fromtimestamp(os.stat(local_path).st_mtime)
-                row = CalcsumsMain._visit(local_path, mtime)
+                row = CalcsumsMain._visit(FileStat(local_path, mtime))
             for n in itertools.count():
                 old_path = local_path.parent / f"{local_path.name}.old.{n}"
                 if not old_path.exists():
