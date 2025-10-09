@@ -20,7 +20,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 import dropbox  # type: ignore
 from dropbox import Dropbox
 from dropbox.files import FileMetadata, ListFolderResult  # type: ignore
-from dropbox.exceptions import ApiError, HttpError  # type: ignore
+from dropbox.exceptions import ApiError, HttpError, AuthError  # type: ignore
 
 log = logging.getLogger("clownload")
 
@@ -220,14 +220,20 @@ class DropboxMain:
         token = os.environ.get("DROPBOX_TOKEN")
         if not token:
             raise UserError(
-                "ERROR: set $DROPBOX_TOKEN. see: https://www.dropbox.com/developers/apps"
+                "ERROR: set $DROPBOX_TOKEN\n" + "see: https://www.dropbox.com/developers/apps"
             )
 
         args.dest.mkdir(parents=True, exist_ok=True)
 
         with SumsFile(self.dest / args.sums, "r+") as self.sumsfile:
             with dropbox.Dropbox(token, timeout=120) as self.dropbox:
-                self.dropbox.users_get_current_account()
+                try:
+                    self.dropbox.users_get_current_account()
+                except AuthError as e:
+                    raise UserError(
+                        str(e) + "\n" + "maybe make a new $DROPBOX_TOKEN?\n"
+                        "see: https://www.dropbox.com/developers/apps"
+                    )
                 files = list(self.list_files(self.source))
                 for fm in files:
                     self.download_file(fm)
