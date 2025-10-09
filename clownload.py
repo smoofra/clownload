@@ -146,24 +146,27 @@ class CalcsumsMain:
     def main(self, args) -> None:
         if args.directory:
             os.chdir(args.directory)
-
-        original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
-        signal.signal(signal.SIGINT, original_sigint_handler)
-
         with SumsFile(args.sums, "r+") as self.sumsfile:
-            with Pool() as self.pool:
-                try:
-                    for result in list(self.walk()):
-                        if result:
-                            self.sumsfile.put(result.get())
-                    self.pool.close()
-                    self.pool.join()
-                except KeyboardInterrupt:
-                    signal.signal(signal.SIGINT, signal.SIG_IGN)
-                    self.pool.terminate()
-                    print()
-                    print("interrupted.")
-                    sys.exit(1)
+            with init_pool() as self.pool:
+                for result in list(self.walk()):
+                    if result:
+                        self.sumsfile.put(result.get())
+                self.pool.close()
+                self.pool.join()
+
+
+@contextmanager
+def init_pool() -> Generator[Pool, None, None]:
+    "Make a multprocessing pool where ^C works without spewing tracebacks everywhere."
+    original = None
+    try:
+        original = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        with Pool() as pool:
+            signal.signal(signal.SIGINT, original)
+            yield pool
+    finally:
+        if original:
+            signal.signal(signal.SIGINT, original)
 
 
 class DropboxMain:
@@ -297,7 +300,7 @@ class DropboxMain:
         self.sumsfile.put(row)
 
 
-def main():
+def _main():
     parser = argparse.ArgumentParser(description="🤡 Download files from clown computers. 🤡")
     parser.add_argument("--verbose", "-v", action="count", default=0)
     subs = parser.add_subparsers(dest="command", required=True)
@@ -321,9 +324,16 @@ def main():
         DropboxMain().main(args)
 
 
-if __name__ == "__main__":
+def main():
     try:
-        main()
+        _main()
     except UserError as e:
         print(e, file=sys.stderr)
         sys.exit(1)
+    except KeyboardInterrupt:
+        print("\ninterrupted.", file=sys.stderr)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()
